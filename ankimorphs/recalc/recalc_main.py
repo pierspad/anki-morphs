@@ -37,6 +37,7 @@ from . import caching, extra_field_utils
 from .anki_data_utils import AnkiMorphsCardData
 from .card_morphs_metrics import CardMorphsMetrics
 from .card_score import _MAX_SCORE, CardScore
+from .recalc_fingerprints import SkipUnchangedCards
 
 
 def recalc() -> None:
@@ -171,6 +172,7 @@ def _update_cards_and_notes(  # pylint:disable=too-many-locals, too-many-stateme
     handled_cards: dict[CardId, None] = {}  # we only care about the key lookup
     modified_cards: dict[CardId, Card] = {}
     modified_notes: list[Note] = []
+    skip_unchanged_cards = SkipUnchangedCards(am_config)
 
     # clear relevant caches between recalcs
     am_db.get_morph_priorities_from_collection.cache_clear()
@@ -190,14 +192,21 @@ def _update_cards_and_notes(  # pylint:disable=too-many-locals, too-many-stateme
             only_lemma_priorities=am_config.evaluate_morph_lemma,
             morph_priority_selection=config_filter.morph_priority_selection,
         )
+        note_type_id = model_manager.id_for_name(config_filter.note_type)
         cards_data_dict: dict[CardId, AnkiMorphsCardData] = (
             am_db.get_am_cards_data_dict(
-                note_type_id=model_manager.id_for_name(config_filter.note_type),
+                note_type_id=note_type_id,
                 include_tags=config_filter.tags["include"],
                 exclude_tags=config_filter.tags["exclude"],
             )
         )
         card_amount = len(cards_data_dict)
+        skip_unchanged_cards.start_note_filter(
+            config_filter=config_filter,
+            field_name_dict=field_name_dict,
+            note_type_id=note_type_id,
+            morph_priorities=morph_priorities,
+        )
 
         for counter, card_id in enumerate(cards_data_dict):
             progress_utils.background_update_progress_potentially_cancel(
@@ -208,6 +217,13 @@ def _update_cards_and_notes(  # pylint:disable=too-many-locals, too-many-stateme
 
             # check if the card has already been handled in a previous note filter
             if card_id in handled_cards:
+                continue
+
+            if skip_unchanged_cards.can_skip(
+                card_id, card_morph_map_cache.get(card_id)
+            ):
+                # the card already holds what this recalc would write to it
+                handled_cards[card_id] = None
                 continue
 
             card: Card = mw.col.get_card(card_id)
@@ -329,6 +345,8 @@ def _update_cards_and_notes(  # pylint:disable=too-many-locals, too-many-stateme
     progress_utils.background_update_progress(label="Inserting into Anki collection")
     mw.col.update_cards(list(modified_cards.values()))
     mw.col.update_notes(modified_notes)
+
+    skip_unchanged_cards.save(modified_cards, modified_notes)
 
 
 def _add_offsets_to_new_cards(

@@ -46,7 +46,12 @@ from ankimorphs.generators import (
 )
 from ankimorphs.morphemizers import camel_wrapper, spacy_wrapper
 from ankimorphs.progression import progression_window
-from ankimorphs.recalc import anki_data_utils, caching, recalc_main
+from ankimorphs.recalc import (
+    anki_data_utils,
+    caching,
+    recalc_fingerprints,
+    recalc_main,
+)
 
 
 class FakeEnvironmentParams:
@@ -193,6 +198,7 @@ def create_mw_patches(mock_mw: AnkiQt) -> list[Any]:
     return [
         mock.patch.object(recalc_main, "mw", mock_mw),
         mock.patch.object(caching, "mw", mock_mw),
+        mock.patch.object(recalc_fingerprints, "mw", mock_mw),
         mock.patch.object(progress_utils, "mw", mock_mw),
         mock.patch.object(ankimorphs_db, "mw", mock_mw),
         mock.patch.object(ankimorphs_config, "mw", mock_mw),

@@ -630,6 +630,28 @@ def test_an_interrupted_recalc_reextracts_the_morphs_of_every_card(  # pylint:di
 
 
 @pytest.mark.parametrize("fake_environment_fixture", [_COLLECTION], indirect=True)
+def test_skipping_unchanged_cards_still_matches_a_full_recalc(  # pylint:disable=unused-argument
+    fake_environment_fixture: FakeEnvironment,
+) -> None:
+    collection, config = _start_with_a_config_no_other_test_shares(
+        fake_environment_fixture
+    )
+    recalc_until_the_collection_stops_changing(collection)
+
+    _a_card_was_studied(collection, config, fake_environment_fixture)
+    reused = recalc_until_the_collection_stops_changing(collection)
+
+    am_db = AnkiMorphsDB()
+    am_db.create_recalc_fingerprint_table()
+    am_db.replace_recalc_fingerprints([])
+    am_db.con.close()
+    _discard_the_cached_morphs()
+
+    recalc()
+    assert dump_collection(collection) == reused
+
+
+@pytest.mark.parametrize("fake_environment_fixture", [_COLLECTION], indirect=True)
 def test_the_extraction_signature_survives_an_unrelated_settings_change(  # pylint:disable=unused-argument
     fake_environment_fixture: FakeEnvironment,
 ) -> None:

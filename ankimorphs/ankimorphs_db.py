@@ -132,6 +132,16 @@ class AnkiMorphsDB:  # pylint:disable=too-many-public-methods
                     )
                     """)
 
+    def create_recalc_fingerprint_table(self) -> None:
+        with self.con:
+            self.con.execute("""
+                    CREATE TABLE IF NOT EXISTS Recalc_Fingerprints
+                    (
+                        card_id INTEGER PRIMARY KEY,
+                        fingerprint INTEGER
+                    )
+                    """)
+
     def get_recalc_state(self, key: str) -> str | None:
         row = self.con.execute(
             "SELECT value FROM Recalc_State WHERE key = ?", (key,)
@@ -151,6 +161,20 @@ class AnkiMorphsDB:  # pylint:disable=too-many-public-methods
     def clear_recalc_state(self, key: str) -> None:
         with self.con:
             self.con.execute("DELETE FROM Recalc_State WHERE key = ?", (key,))
+
+    def get_recalc_fingerprints(self) -> dict[int, int]:
+        return dict(
+            self.con.execute(
+                "SELECT card_id, fingerprint FROM Recalc_Fingerprints"
+            ).fetchall()
+        )
+
+    def replace_recalc_fingerprints(self, fingerprints: list[tuple[int, int]]) -> None:
+        with self.con:
+            self.con.execute("DELETE FROM Recalc_Fingerprints")
+            self.con.executemany(
+                "INSERT INTO Recalc_Fingerprints VALUES (?, ?)", fingerprints
+            )
 
     def get_expression_hashes(self) -> dict[int, int]:
         return dict(
@@ -708,6 +732,9 @@ class AnkiMorphsDB:  # pylint:disable=too-many-public-methods
             self.con.execute("DROP TABLE IF EXISTS Card_Morph_Map;")
             self.con.execute("DROP TABLE IF EXISTS Seen_Morphs;")
             self.con.execute("DROP TABLE IF EXISTS Recalc_State;")
+            # a fingerprint says what the previous recalc left on a card, which
+            # only means something next to the morphs these tables hold
+            self.con.execute("DROP TABLE IF EXISTS Recalc_Fingerprints;")
 
     @staticmethod
     def drop_seen_morphs_table() -> None:

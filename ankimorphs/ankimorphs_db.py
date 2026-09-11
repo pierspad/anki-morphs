@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import functools
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +67,7 @@ class AnkiMorphsDB:  # pylint:disable=too-many-public-methods
         self.create_cards_table()
         self.create_card_morph_map_table()
         self.create_seen_morph_table()
+        self.create_recalc_state_table()
 
     def create_cards_table(self) -> None:
         with self.con:
@@ -77,7 +78,9 @@ class AnkiMorphsDB:  # pylint:disable=too-many-public-methods
                         note_id INTEGER,
                         note_type_id INTEGER,
                         card_type INTEGER,
-                        tags TEXT
+                        tags TEXT,
+                        expression_hash INTEGER,
+                        memory_strength INTEGER
                     )
                     """)
 
@@ -119,10 +122,44 @@ class AnkiMorphsDB:  # pylint:disable=too-many-public-methods
                     )
                     """)
 
-    def insert_many_into_card_table(
-        self, card_list: list[dict[str, int | str | bool]]
-    ) -> None:
+    def create_recalc_state_table(self) -> None:
         with self.con:
+            self.con.execute("""
+                    CREATE TABLE IF NOT EXISTS Recalc_State
+                    (
+                        key TEXT PRIMARY KEY,
+                        value TEXT
+                    )
+                    """)
+
+    def get_recalc_state(self, key: str) -> str | None:
+        row = self.con.execute(
+            "SELECT value FROM Recalc_State WHERE key = ?", (key,)
+        ).fetchone()
+        return None if row is None else str(row[0])
+
+    def set_recalc_state(self, key: str, value: str) -> None:
+        with self.con:
+            self.con.execute(
+                """
+                    INSERT INTO Recalc_State VALUES (?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                    """,
+                (key, value),
+            )
+
+    def clear_recalc_state(self, key: str) -> None:
+        with self.con:
+            self.con.execute("DELETE FROM Recalc_State WHERE key = ?", (key,))
+
+    def get_expression_hashes(self) -> dict[int, int]:
+        return dict(
+            self.con.execute("SELECT card_id, expression_hash FROM Cards").fetchall()
+        )
+
+    def replace_card_table(self, card_list: list[dict[str, Any]]) -> None:
+        with self.con:
+            self.con.execute("DELETE FROM Cards")
             self.con.executemany(
                 """
                     INSERT OR IGNORE INTO Cards VALUES
@@ -131,11 +168,50 @@ class AnkiMorphsDB:  # pylint:disable=too-many-public-methods
                        :note_id,
                        :note_type_id,
                        :card_type,
-                       :tags
+                       :tags,
+                       :expression_hash,
+                       :memory_strength
                     )
                     """,
                 card_list,
             )
+
+    def delete_card_morphs(self, card_ids: Iterable[int]) -> None:
+        with self.con:
+            self.con.executemany(
+                "DELETE FROM Card_Morph_Map WHERE card_id = ?",
+                ((card_id,) for card_id in card_ids),
+            )
+
+    def get_morphs_with_highest_intervals(self) -> list[dict[str, Any]]:
+        with self.con:
+            morphs_raw = self.con.execute("""
+                    SELECT
+                        Card_Morph_Map.morph_lemma,
+                        Card_Morph_Map.morph_inflection,
+                        MAX(Cards.memory_strength)
+                    FROM Card_Morph_Map
+                    INNER JOIN Cards ON
+                        Card_Morph_Map.card_id = Cards.card_id
+                    GROUP BY Card_Morph_Map.morph_lemma, Card_Morph_Map.morph_inflection
+                    """).fetchall()
+
+        return [
+            {
+                "lemma": row[0],
+                "inflection": row[1],
+                "highest_lemma_learning_interval": None,
+                "highest_inflection_learning_interval": row[2],
+            }
+            for row in morphs_raw
+        ]
+
+    def replace_morph_table(self, morph_list: list[dict[str, Any]]) -> None:
+        # The delete is deliberately left uncommitted here: the insert below
+        # commits both at once, so an interrupted recalc cannot leave an empty
+        # Morphs table behind.
+        self.con.execute("DELETE FROM Morphs")
+        self.insert_many_into_morph_table(morph_list)
 
     def insert_many_into_morph_table(
         self, morph_list: list[dict[str, int | str | bool]]
@@ -631,6 +707,7 @@ class AnkiMorphsDB:  # pylint:disable=too-many-public-methods
             self.con.execute("DROP TABLE IF EXISTS Morphs;")
             self.con.execute("DROP TABLE IF EXISTS Card_Morph_Map;")
             self.con.execute("DROP TABLE IF EXISTS Seen_Morphs;")
+            self.con.execute("DROP TABLE IF EXISTS Recalc_State;")
 
     @staticmethod
     def drop_seen_morphs_table() -> None:
